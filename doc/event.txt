@@ -1,0 +1,251 @@
+/* Event scheduler documentation
+ *
+ * date   : 26/03/03
+ * author : Brian Graversen
+ */
+
+This document will try to explain how to use the event scheduler system introduced
+for the SocketMud(tm) codebase. The document is divided into sections, which should
+make it easier to find what you need.
+
+Chapter 1   Installation
+  1.1       downloading the code
+  1.2       patching the code
+  1.3       applying the patch by hand
+Chapter 2   Creating new events
+  2.1       delaying text messages (example)
+  2.2       using event->argument
+  2.3       delayed healing (example)
+Chapter 3   Extending the event structure
+  3.1       modifying the data structures
+  3.2       adding support functions
+  3.3       constructor/destructor changes
+
+Chapter 1 - Installation
+========================
+1.1) downloading the code
+First you must get the SocketMud sourcecode - you'll need at least version 1.2,
+which is the version the first event patch was made against. You can find the
+code at http://www.socketmud.dk.
+
+Check to see if the version you are downloading also has an event patch available,
+if not, pick a version which has (usually the event patches has a version number,
+which should be the same as the SocketMud code you are downloading). You should
+end up having to files, with the following names
+
+SocketMud-1.x.tar.gz
+event-1.x.patch
+
+where x is the version number (1.2 is the earliest version supporting events).
+
+1.2) patching the code
+Place both downloaded files in the same directory on your Linux shell, then type
+the following commands to install the SocketMud code as well as the event patch.
+
+tar xvzf SocketMud-1.x.tar.gz
+patch -p0 < event-1.x.patch
+
+again, replace x with the version number that you have downloaded. This should
+unpack the SocketMud codebase, and apply the event patch to the codebase.
+
+1.3) applying the patch by hand
+If you are unable to get the patch working, or if you already have a modified code,
+then you may have to apply the patch by hand (you can always try patching first,
+if it fails, you can try to add the patch line-by-line by yourself. This is actually
+not as hard as it sounds, as most of the code is contained in seperate files.
+
+First I suggest that you download a clean version of the codebase, and apply the
+patch as above, this should create a couple of new files called event.c event.h
+and event-handler.c - these three files you should just copy to your existing code,
+and remember to add these files to your Makefile.
+
+Now almost all the work has been made for us, and all we need is to make a few
+adjustments to the existing code - this is where the patch file comes in. Open the
+patch file with your favourite text editor - at first the contents of the file may
+seem confusing, but it's actually quite simple.
+
+Lines beginning with + are to be added
+
+Lines beginning with - are to be removed
+
+Lines beginning with | are replacement lines, usually there are two such sections,
+where the first section is what we are going to remove, and the second section is
+what are are going to replace the removed lines with.
+
+All lines without any of the above symbols are just used to tell you where in the
+code the lines are supposed to be replaced, added or removed (usually the patch
+contains 3-5 lines of code around the places that needs changing).
+
+Since you already have the support files (event.c, event.h and event-handler.c),
+you only need to make a few minor adjustments, which should take no time at all.
+
+Chapter 2 - Creating new events
+===============================
+2.1) delaying text messages (example)
+In this example, we will create an event which delays a message for a few seconds.
+Try imagening a conversation between a mobile (NPC) and a player. We don't want
+the mobile to respond the instant the player asks a question, but rather let the
+mobile wait a second or two before replying (more realistic). I won't show the
+code for the whole mobile-conversation thing, but just the event handling required.
+
+/* this delays the response from the mobile */
+event = alloc_event();
+event->fun = &event_mobile_message;
+event->type = EVENT_MOBILE_MESSAGE;
+event->argument = strdup("No, I don't think we have any acorns.\n\r");
+add_event_char(event, dMob, 2 * PULSES_PER_SECOND);
+
+/* this is the callback function */
+bool event_mobile_message(EVENT_DATA *event)
+{
+  D_MOBILE *dMob;
+
+  if ((dMob = event->owner.dMob) == NULL)
+  {
+    bug("event_mobile_message: no owner.");
+    return TRUE;
+  }
+
+  text_to_mobile(dMob, event->argument);
+
+  return FALSE;
+}
+
+Basicly the above example will display the message 2 seconds after the event
+is enqueued - it's a bit rough, but it should show the idea.
+
+2.2) using event->argument
+The event->argument can be used to store a wide range of variables, though most of
+the time, it's not used at all, or just used to store a single number or string.
+But every once in a while, we need to store a large set of data, and for this we
+can use sscanf() and event->argument. For instance, should we need to store 2
+numbers and a string, we could do the following
+
+  event = alloc_event();
+  event->fun = &event_example;   /* these are not good names for callback function,
+  event->type = EVENT_EXAMPLE;    * but I couldn't come up with a better name */
+  event->argument = strdup("10 45 foobar");
+  add_event_game(event, 10 * PULSES_PER_SECOND);
+
+bool event_example(EVENT_DATA *event)
+{
+  char buf[MAX_BUFFER];
+  int value1, value2;
+
+  sscanf(event->argument, "%d %d %s", &value1, &value2, buf);
+}
+
+The variables now has the following values
+
+value1 = 10
+value2 = 45
+buf = "foobar"
+
+Just remember that sscanf will fail if event->argument doesn't contain the exact
+format described in the second argument ("%d %d %s" in this example).
+
+2.3) delayed healing (example)
+In this example we will try two things, firstly we will make an attempt at delaying
+an effect, and make the event call itself over and over a specific amount of times.
+Imagine someone drinking a healing potion - usually one would just restore some
+amount of health, though a more realistic approach would be to heal the player a
+little health every few seconds for a period of time (like Diablo 2 does). We now
+assume that the mobiles have a field called health (dMob->health) - this is not a
+part of the SocketMud codebase.
+
+void cmd_heal(D_MOBILE *dMob, char *arg)
+{
+  EVENT_DATA *event;
+
+  if (event_isset_mobile(dMob, EVENT_MOBILE_HEALING))
+  {
+    text_to_mobile(dMob, "You are already healing.\n\r");
+    return;
+  }
+
+  text_to_mobile(dMob, "You begin healing.\n\r");
+
+  event = alloc_event();
+  event->fun = &event_mobile_healing;
+  event->type = EVENT_MOBILE_HEALING;
+  event->argument = strdup("10 25");
+  add_event_mobile(event, dMob, 2 * PULSES_PER_SECOND);
+}
+
+bool event_mobile_healing(EVENT_DATA *event)
+{
+  D_MOBILE *dMob;
+  int count, value;
+
+  /* scan for the two values */
+  sscanf(event->argument, "%d %d", count, value);
+
+  /* heal some amount of health */
+  dMob->health += value;
+
+  text_to_mobile(dMob, "You feel better.\n\r");
+
+  /* schedule another heal if count > 0 */
+  if (--count > 0)
+  {
+    char buf[MAX_BUFFER];
+
+    /* store new values */
+    sprintf(buf, "%d %d", count, value);
+
+    event = alloc_event();
+    event->fun = &event_mobile_healing;
+    event->type = EVENT_MOBILE_HEALING;
+    event->argument = strdup(buf);
+    add_event_mobile(event, dMob, 2 * PULSES_PER_SECOND);
+  }
+}
+
+The above event will loop 10 times, each time healing 25 points of health.
+
+Chapter 3 - Extending the event structure
+=========================================
+Eventually you may want to have events which are owned by other datastructures
+than the two in the patch (mobile and socket structures). In this chapter, I'll
+assume that you have a new datastructe for items called D_OBJECT, and that you
+want events to be attached to items. This chapter will explain the needed changes.
+
+3.1) modifying the data structures
+You need to modify two datastructures. First you must extend the event_data
+structure found in event.h - in the owner union, you must add D_OBJECT to the
+list of valid owners. Secondly, you need to let the D_OBJECT structure know about
+the existance of events. If you look at D_MOBILE or D_SOCKET, you will notice
+that it has two fields called event_first and event_last - you'll need two similar
+fields in your D_OBJECT structure.
+
+3.2) adding support functions
+Event's are no fun without a few support functions, for instance, when working
+with mobiles, you should be used to add_event_mobile(), event_isset_mobile()
+and strip_event_mobile() - I suggest copying these functions and make the
+adjustments needed, to make support functions for your new D_OBJECT structure.
+
+You should also begin a new list of types for this structure, something like
+
+#define EVENT_OBJECT_EXPLODE   1
+#define EVENT_OBJECT_VANISH    2
+etc etc etc...
+
+3.3) constructor/destructor changes
+If you follow the approach used for sockets and mobiles (ie. having an alloc()
+function and a free() function to create and dispose of instances), then I
+suggest adding the initialization and cleanup of events in these functions. If
+you look at alloc_mobile() you will notice that it sets the two variables
+event_first and event_last to NULL, and you should do the same for your own
+allocating function. In your free_item() function (or whatever you call it),
+you must call dequeue_event() on all events still active on the item. I suggest
+looking at free_mobile() or close_socket(), usually this is just two lines.
+
+Now you are done adding support for a new data structure.
+
+I hope some of this helps you to understand the eventqueue, if there are details
+about the queue that you want explained, then please mail me, so I can extend
+this document.
+
+regards
+
+Brian Graversen
