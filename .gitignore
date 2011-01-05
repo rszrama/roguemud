@@ -1,0 +1,5 @@
+*.komodoproject
+*.o
+RogueMUD
+*.pfile
+
